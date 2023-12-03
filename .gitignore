@@ -6,3 +6,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+.pio/
+.vscode/
+.ipynb_checkpoints/

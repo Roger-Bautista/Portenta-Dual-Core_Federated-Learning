@@ -37,6 +37,295 @@ struct train_data_cnn{
 #define KERNEL_SIZE 5
 #define OUT_CHANNELS 8
 
+//SHARED MEMORY DEFINES
+#define USING_SRAM4               true
+
+#define SRAM3_START_ADDRESS       ((uint32_t) 0x30040000)
+#define SRAM4_START_ADDRESS       ((uint32_t) 0x38000000)
+
+#if USING_SRAM4
+  // Using AHB SRAM4 at 0x38000000
+  #define SRAM_START_ADDRESS        SRAM4_START_ADDRESS
+
+  //#define ARRAY_SIZE                16000
+  const uint16_t ARRAY_SIZE = 16000;
+  
+  // Max 64K - 8 bytes (1 * uint32_t + 2 * uint8_t)
+  #if ( ARRAY_SIZE > (65536 - 8) / 4 )
+    #error ARRAY_SIZE must be < 16382
+  #endif
+#else
+  // Using AHB SRAM3 at 0x30040000
+  #define SRAM_START_ADDRESS        SRAM3_START_ADDRESS
+
+  //#define ARRAY_SIZE                8000
+  const uint16_t ARRAY_SIZE = 8000;        
+  
+  // Max 32K - 8 bytes (1 * uint32_t + 2 * uint8_t)
+  #if ( ARRAY_SIZE > (32768 - 8) / 4 )
+    #error ARRAY_SIZE must be < 8190
+  #endif
+#endif
+
+#ifndef BUFF_CORES_SIZE
+	#define BUFF_CORES_SIZE	32
+#endif
+
+typedef struct {
+	// Flags to lock reading or writing
+	unsigned char status_CM7_to_CM4;	// CM4 semaphor flag -> 1 - Can Read | 0 -> Can write - Default
+	unsigned char status_CM4_to_CM7;	// CM7 semaphor flag -> 1 - Can read | 0 -> Can Write - Default
+
+	f32 buff4to7[ARRAY_SIZE/2];	// Buffer to transfer from core 4 to core 7
+	f32 buff7to4[ARRAY_SIZE/2];	// Buffer to transfer from core 7 to core 4
+
+	// Stored buffer sizes. MUST BE LESS THAN ARRAY_SIZE/2
+	unsigned int buff4to7_size;
+	unsigned int buff7to4_size;
+} shared_data_TypeDef;
+
+#define shared_data		((shared_data_TypeDef *) SRAM_START_ADDRESS)
+
+static unsigned int buffer_size_limited_4to7, buffer_size_limited_7to4;
+
+void core_share_init() {
+	shared_data->status_CM7_to_CM4 = 0;
+	shared_data->status_CM4_to_CM7 = 0;
+}
+
+#ifdef CORE_CM7
+
+void MPU_Config()
+{
+
+  /*
+  MPU - The MPU is an optional component for the memory protection. Including the MPU
+        in the STM32 microcontrollers (MCUs) makes them more robust and reliable.
+        The MPU must be programmed and enabled before using it. If the MPU is not enabled,
+        there is no change in the memory system behavior.
+
+  HAL - The STM32 Hardware Abstraction Layer (HAL) provides a simple, generic multi-instance
+        set of APIs (application programming interfaces) to interact with the upper layers
+        like the user application, libraries and stacks.
+
+  */
+  MPU_Region_InitTypeDef MPU_InitStruct;
+
+  /* Disable the MPU */
+  HAL_MPU_Disable();
+
+  /////////////
+  
+  /* Configure the MPU attributes as WT for SDRAM */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+
+  // Base address of the region to protect
+#if USING_SRAM4
+  MPU_InitStruct.BaseAddress = SRAM4_START_ADDRESS;             // For SRAM4 only
+  // Size of the region to protect, 64K for SRAM4
+  MPU_InitStruct.Size = MPU_REGION_SIZE_64KB;                   // Important to access more memory
+#else
+  MPU_InitStruct.BaseAddress = SRAM3_START_ADDRESS;             // For SRAM3 only
+  // Size of the region to protect, only 32K for SRAM3
+  MPU_InitStruct.Size = MPU_REGION_SIZE_32KB;                   // Important to access more memory
+#endif
+
+  // Region access permission type
+  MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
+
+  // Shareability status of the protected region
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+
+  /////////////
+
+  // Optional
+
+  // Bufferable status of the protected region
+  //MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
+  // Cacheable status of the protected region
+  //MPU_InitStruct.IsCacheable = MPU_ACCESS_CACHEABLE;
+  // Number of the region to protect
+  //MPU_InitStruct.Number = MPU_REGION_NUMBER7;
+  // TEX field level
+  //MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  // number of the subregion protection to disable
+  //MPU_InitStruct.SubRegionDisable = 0x00;
+  // instruction access status
+  //MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_ENABLE;
+
+  /////////////
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
+  /* Enable the MPU */
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+}
+
+/*
+ * Get data from M4 to M7
+ */
+void read_to_M7(f32 *buffer) {
+	if (shared_data->status_CM4_to_CM7) {		// if M4 to M7 buffer has data
+
+		for(unsigned int n = 0; n < shared_data->buff4to7_size; ++n) {
+			*(buffer+n) = shared_data->buff4to7[n];	// Transfer data
+		}
+		shared_data->status_CM4_to_CM7 = 0;	// Unlock buffer and marks that it can write again
+	}
+}
+
+
+/*
+ * Send data from M7 to M4
+ */
+void  write_to_M4(f32 buffer[], unsigned int buffer_size) {
+
+	if (!shared_data->status_CM7_to_CM4) {	// if M7 to M4 buffer is not locked
+
+		buffer_size_limited_7to4 = (buffer_size > ARRAY_SIZE/2) ? ARRAY_SIZE/2 : buffer_size;
+
+		shared_data->buff7to4_size = buffer_size_limited_7to4;
+		for (unsigned int n = 0; n < buffer_size_limited_7to4; ++n) {
+			shared_data->buff7to4[n] = buffer[n];	// Transfer data
+		}
+
+		shared_data->status_CM7_to_CM4 = 1;
+
+	}
+}
+#endif
+
+
+
+#ifdef CORE_CM4
+/*
+ * Get data from M7 to M4
+ */
+boolean read_to_M4(f32 *buffer) {
+	if (shared_data->status_CM7_to_CM4) {	// if M7 to M4 buffer has data
+
+		for(unsigned int n = 0; n < shared_data->buff7to4_size; ++n) {
+			*(buffer+n) = shared_data->buff7to4[n];	// Transfer data
+		}
+		shared_data->status_CM7_to_CM4 = 0;	// Unlock buffer
+        return true;
+	}
+    return false;
+}
+
+
+/*
+ * Send data from M4 to M7
+ */
+void write_to_M7(f32 buffer[], unsigned int buffer_size) {
+
+	if (!shared_data->status_CM4_to_CM7) {	// if M4 to M7 buffer is not locked
+
+		buffer_size_limited_4to7 = (buffer_size > ARRAY_SIZE/2) ? ARRAY_SIZE/2 : buffer_size;
+
+		shared_data->buff4to7_size = buffer_size_limited_4to7;
+		for (unsigned int n = 0; n < buffer_size_limited_4to7; ++n) {
+			shared_data->buff4to7[n] = buffer[n];	// Transfer data
+		}
+
+		shared_data->status_CM4_to_CM7 = 1;
+
+	}
+}
+#endif
+
+struct buffer_struct{
+    unsigned int size;
+    f32 *buffer;
+
+    buffer_struct(unsigned int size, f32 *buffer) : buffer(buffer), size(size) {};
+};
+
+//Order of Buffer info: typeOfOperation, input.cols, input.rows, input.data, target.cols, target.rows, target.data
+buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
+    /*
+    sample.input.data
+    sample.input.cols
+    sample.input.rows
+    
+    sample.target.data
+    sample.target.cols
+    sample.target.rows
+    */
+    f32 *buffer;
+
+    unsigned int input_size = sample.input.cols * sample.input.rows;
+    unsigned int target_size = sample.target.cols * sample.target.rows;
+
+    buffer[0] = typeOfOperation;
+    buffer[1] = sample.input.cols;
+    buffer[2] = sample.input.rows;
+    for(unsigned int n=0; n < input_size; n++){
+        buffer[n+3] = sample.input.data[n];
+    }
+
+    buffer[input_size + 3] = sample.target.cols;
+    buffer[input_size + 4] = sample.target.rows;
+    for(unsigned int n=0; n < target_size; n++){
+        buffer[input_size+5+n] = sample.target.data[n];
+    }
+
+    buffer_struct result(input_size + target_size + 5, buffer);
+    return result;
+}
+
+train_data buffer_to_train_data(f32* buffer, char& typeOfOperation){
+    typeOfOperation = buffer[0];
+
+    train_data sample;
+    sample.input.cols = buffer[1];
+    sample.input.rows = buffer[2];
+    unsigned int input_size = sample.input.cols * sample.input.rows;
+    f32 data[input_size];
+    sample.input.data = data;
+    for(unsigned int n = 0; n<input_size; n++){
+        data[n] = buffer[n+3];
+    }
+    sample.target.cols = buffer[1];
+    sample.target.rows = buffer[2];
+    unsigned int target_size = sample.target.cols * sample.target.rows;
+    f32 data2[target_size];
+    sample.target.data = data2;
+    for(unsigned int n = 0; n<target_size; n++){
+        data[n] = buffer[n+input_size+5];
+    }
+
+    return sample;
+}
+
+//Order of Buffer info: error, matrix.cols, matrix.rows, matrix.data
+buffer_struct M_to_buffer(M matrix, f32 error){
+    f32 *buffer;
+    buffer[0] = error;
+    buffer[1] = matrix.cols;
+    buffer[2] = matrix.rows;
+    unsigned int matrix_size = matrix.rows * matrix.cols;
+    for (unsigned int n=0; n<matrix_size; n++){
+        buffer[n+3] = matrix.data[n];
+    }
+
+    buffer_struct result(matrix_size + 3, buffer);
+    return result;
+}
+
+M buffer_to_M(f32* buffer, f32& error){
+    error = buffer[0];
+    M data;
+    data.cols = buffer[1];
+    data.rows = buffer[2];
+    unsigned int matrix_size = data.cols * data.rows;
+    for(unsigned int n=0; n<matrix_size; n++){
+        data.data[n] = buffer[n+3];
+    }
+    return data;
+}
+
+
 static bool debug_nn = false; // Set this to true to see e.g. features generated from the raw signal
 
 
@@ -507,6 +796,8 @@ M predict(M input, M target, f32& loss){
     return b;
 }
 
+#ifdef CORE_CM7
+
 void setup(){
     Serial.begin(9600);
     InitMemory(1024 * 430);
@@ -515,6 +806,8 @@ void setup(){
     l2 = Layer::create(30, 25);
 
     memoryUsed = MemoryArena.Used;
+    MPU_Config();
+    core_share_init();
 
     //pinMode(LEDR, OUTPUT);
     //pinMode(LEDG, OUTPUT);
@@ -535,13 +828,73 @@ void setup(){
 }
 
 void loop(){
+    if(shared_data->status_CM4_to_CM7){
+        f32 *buffer;
+        read_to_M7(buffer);
+        char inByte;
+        M output;
+        f32 error = 0;
+        train_data sample = buffer_to_train_data(buffer, inByte);
+        if(inByte == 't'){
+            error = 0;
+            output = train(sample.input, sample.target, error);
+        }
+        else if(inByte == 'p'){
+            error = 0;
+            output = predict(sample.input, sample.target, error);
+        }
+        buffer_struct bufferAux = M_to_buffer(output, error);
+        write_to_M4(bufferAux.buffer, bufferAux.size);
+    }
+}
+
+#endif
+
+#ifdef CORE_CM4
+
+void setup(){
+    Serial.begin(9600);
+    InitMemory(1024 * 430);
+
+    l1 = Layer::create(25, 30);
+    l2 = Layer::create(30, 25);
+
+    memoryUsed = MemoryArena.Used;
+
+   //pinMode(LEDR, OUTPUT);
+    //pinMode(LEDG, OUTPUT);
+    //pinMode(LEDB, OUTPUT);
+    pinMode(LED, OUTPUT);
+
+    //digitalWrite(LEDR, HIGH);
+    //digitalWrite(LEDG, HIGH);
+    //digitalWrite(LEDB, HIGH);
+    digitalWrite(LED, LED_ON);
+    digitalWrite(LED, LED_OFF);
+
+    // put your setup code here, to run once:
+    randomSeed(0);
+
+    initNetworkModel();
+    digitalWrite(LED_BUILTIN, LOW);    // OFF   
+}
+
+
+void loop(){
     if(Serial.available() > 0){
         char inByte = Serial.read();
         if(inByte == 't'){
             //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
             train_data sample = receive_sample(25);
+            buffer_struct aux = train_data_to_buffer(inByte, sample);
+            write_to_M7(aux.buffer, aux.size);
+            //M output = train(sample.input, sample.target, error); //-> CP7 
+            boolean read = 0;
+            while(!read){
+                read = read_to_M4(aux.buffer);
+            }
             f32 error = 0;
-            M output = train(sample.input, sample.target, error);
+            M output = buffer_to_M(aux.buffer,error);
             //sendFloat(error);
             sendInferenceResult(output, error);
         } else if(inByte == 'p'){
@@ -549,8 +902,15 @@ void loop(){
 
             train_data sample = receive_sample(25);
             //M input = receive_sample_inference();
+            buffer_struct aux = train_data_to_buffer(inByte, sample);
+            write_to_M7(aux.buffer, aux.size);
+            //M output = predict(sample.input, sample.target, loss); //-> CP7 
+            boolean read = 0;
+            while(!read){
+                read = read_to_M4(aux.buffer);
+            }
             float loss = 0.0;
-            M output = predict(sample.input, sample.target, loss);
+            M output = buffer_to_M(aux.buffer,loss);
             sendInferenceResult(output, loss);
             MemoryArena.Used = memoryUsed;
         } else if(inByte == 'f'){
@@ -580,3 +940,4 @@ void loop(){
     }
     MemoryArena.Used = memoryUsed;
 }
+#endif
