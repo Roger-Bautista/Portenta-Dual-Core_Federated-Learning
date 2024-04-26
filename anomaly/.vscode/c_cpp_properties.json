@@ -8,8 +8,7 @@
         {
             "name": "PlatformIO",
             "includePath": [
-                "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly_2023_11_13/include",
-                "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly_2023_11_13/src",
+                "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly/src",
                 "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino",
                 "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino/api/deprecated",
                 "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino/api/deprecated-avr-comp",
@@ -61,8 +60,7 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
-                    "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly_2023_11_13/include",
-                    "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly_2023_11_13/src",
+                    "d:/UPC - FIB/TFG/Portenta/Projecte/anomaly/src",
                     "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino",
                     "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino/api/deprecated",
                     "C:/Users/Usuario/.platformio/packages/framework-arduino-mbed/cores/arduino/api/deprecated-avr-comp",
@@ -113,7 +111,7 @@
                 ]
             },
             "defines": [
-                "PLATFORMIO=60111",
+                "PLATFORMIO=60114",
                 "ARDUINO_PORTENTA_H7_M4",
                 "PORTENTA_H7_PINS",
                 "ARM_MATH_CM4",

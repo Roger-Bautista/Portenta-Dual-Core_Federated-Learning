@@ -363,14 +363,26 @@ def get_tick():
 
 def train_single(device, x, y, train_data):
     device.serial.write(b"t")
+    print("BEFORE SENDING")
     send_sample(device, x, y.reshape(1,TARGET_SIZE))
+    print(x, y.reshape(1,TARGET_SIZE))
+    print("AFTER SENDING")
     start = get_tick()
+    value = b'0'
+    while(True):
+        value = device.serial.read(4)
+        print(value)
+    print("BEFORE READING")
     output = read_matrix(device, TARGET_SIZE+1)
+    print("AFTER READING")
+    train_data["inTime"][device.serial.port] = struct.unpack("I", device.serial.read(4))[0]
+    print("SECONDS:" + str(train_data["inTime"][device.serial.port]))
     end = get_tick()
     train_data['losses'][device.serial.port] = output[-1]
     train_data['times'][device.serial.port] = end-start
     res = output[:-1]
     train_data['acc'][device.serial.port] = 1 if np.argmax(y) == np.argmax(res) else 0
+    
 
 
 def train(device, X, y, size=1):
@@ -783,11 +795,9 @@ def train_ae_with_fl(df, num_devices=3, fl_samples=5, lr=0.001, first=True, iid=
     X_Train = []
     total_entries = 2305
     each_split_size = total_entries // 3
-
     X_Train.append(df_normalized.values[0:each_split_size])
     X_Train.append(df_normalized.values[each_split_size:each_split_size*2])
     X_Train.append(df_normalized.values[each_split_size*2:each_split_size*3])
-
     training_data = []
     #total_acc = {'/dev/cu.usbmodem13201':0, '/dev/cu.usbmodem13101':0, '/dev/cu.usbmodem13301':0}
     total_acc = {}
@@ -795,12 +805,12 @@ def train_ae_with_fl(df, num_devices=3, fl_samples=5, lr=0.001, first=True, iid=
        #if debug: print("d is ", d)
        total_acc[d] = 0    
     #if debug: print("total_acc = ", total_acc) 
-    
+    print("F")
     for i in range(each_split_size):
         if i%fl_samples==0 and i>0:
             fl(devices)
             fl_rounds += 1
-        train_data = {'losses':{}, 'times':{}, 'acc':{}}
+        train_data = {'losses':{}, 'times':{}, 'acc':{}, 'inTime':{}}
         threads = []
         for j, device in enumerate(devices):
             thread = threading.Thread(target=train_single, args=(device, X_Train[j][i],X_Train[j][i], train_data))
@@ -810,6 +820,7 @@ def train_ae_with_fl(df, num_devices=3, fl_samples=5, lr=0.001, first=True, iid=
         for thread in threads: thread.join() # Wait for all the threads to end
         training_data.append(train_data)
         print(f"Loss: {train_data['losses']} {i}/{each_split_size}")
+        print(f"TIME IN MICROCONTROLLER: {train_data['inTime']}")
 
     # SET THE DEVICES WEIGHT AS THE GLOBAL MODEL
     fl(devices)
@@ -820,7 +831,13 @@ def train_ae_with_fl(df, num_devices=3, fl_samples=5, lr=0.001, first=True, iid=
 
 
 loaded_dict = train_ae_with_fl(df,num_devices=3, fl_samples=25, lr=0.01, first=True, iid=True)
-
+print(len(loaded_dict))
+acc = 0
+for dict in loaded_dict:
+    print(dict)
+    acc = acc + dict['inTime']['COM3']
+print(acc)
+print(acc/len(loaded_dict))
 # In[ ]:
 
 # FF from CNN

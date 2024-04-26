@@ -3,6 +3,15 @@
 #define ONCOMPUTER 0
 #include "nn.h"
 
+
+#include "mbed.h"
+#include <vector>
+
+using namespace mbed;
+using namespace rtos;
+
+
+
 #define T_BEAM_V10 // ttgo-t-beam
 // #define T_BEAM_LORA_32 // ttgo-lora32-v1
 
@@ -38,7 +47,7 @@ struct train_data_cnn{
 #define OUT_CHANNELS 8
 
 //SHARED MEMORY DEFINES
-#define USING_SRAM4               true
+#define USING_SRAM4               false
 
 #define SRAM3_START_ADDRESS       ((uint32_t) 0x30040000)
 #define SRAM4_START_ADDRESS       ((uint32_t) 0x38000000)
@@ -48,7 +57,7 @@ struct train_data_cnn{
   #define SRAM_START_ADDRESS        SRAM4_START_ADDRESS
 
   //#define ARRAY_SIZE                16000
-  const uint16_t ARRAY_SIZE = 16000;
+  const uint16_t ARRAY_SIZE = 16000-5;
   
   // Max 64K - 8 bytes (1 * uint32_t + 2 * uint8_t)
   #if ( ARRAY_SIZE > (65536 - 8) / 4 )
@@ -59,7 +68,7 @@ struct train_data_cnn{
   #define SRAM_START_ADDRESS        SRAM3_START_ADDRESS
 
   //#define ARRAY_SIZE                8000
-  const uint16_t ARRAY_SIZE = 8000;        
+  const uint16_t ARRAY_SIZE = 8000-5;        
   
   // Max 32K - 8 bytes (1 * uint32_t + 2 * uint8_t)
   #if ( ARRAY_SIZE > (32768 - 8) / 4 )
@@ -71,29 +80,46 @@ struct train_data_cnn{
 	#define BUFF_CORES_SIZE	32
 #endif
 
+
 typedef struct {
+    unsigned int led;
+    unsigned int nextLed;
+    unsigned int otherLed;
+    boolean update;
 	// Flags to lock reading or writing
-	unsigned char status_CM7_to_CM4;	// CM4 semaphor flag -> 1 - Can Read | 0 -> Can write - Default
-	unsigned char status_CM4_to_CM7;	// CM7 semaphor flag -> 1 - Can read | 0 -> Can Write - Default
+	unsigned int buff4to7_size;
+	unsigned int buff7to4_size;
+
+	int status_CM7_to_CM4;	// CM4 semaphor flag -> 1 - Can Read | 0 -> Can write - Default
+	int status_CM4_to_CM7;	// CM7 semaphor flag -> 1 - Can read | 0 -> Can Write - Default
+    int printSerial;
 
 	f32 buff4to7[ARRAY_SIZE/2];	// Buffer to transfer from core 4 to core 7
 	f32 buff7to4[ARRAY_SIZE/2];	// Buffer to transfer from core 7 to core 4
 
 	// Stored buffer sizes. MUST BE LESS THAN ARRAY_SIZE/2
-	unsigned int buff4to7_size;
-	unsigned int buff7to4_size;
 } shared_data_TypeDef;
 
-#define shared_data		((shared_data_TypeDef *) SRAM_START_ADDRESS)
+// FF added fct declarations for platformio
+void initNetworkModel();
+void sendFloat (float arg);
+void sendInt (int arg);
+//void read_bias(Conv2D* l);
+//void read_weights(Layer* l);
+
+
+#define shared_data ((shared_data_TypeDef *)SRAM_START_ADDRESS)
 
 static unsigned int buffer_size_limited_4to7, buffer_size_limited_7to4;
 
 void core_share_init() {
-	shared_data->status_CM7_to_CM4 = 0;
-	shared_data->status_CM4_to_CM7 = 0;
+	shared_data->status_CM7_to_CM4 = false;
+	shared_data->status_CM4_to_CM7 = false;
+    shared_data->printSerial = false;
 }
 
-#ifdef CORE_CM7
+
+
 
 void MPU_Config()
 {
@@ -161,23 +187,55 @@ void MPU_Config()
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 }
 
+struct buffer_struct{
+    unsigned int size;
+    f32 *buffer;
+
+    buffer_struct(unsigned int size, f32 *buffer) : buffer(buffer), size(size) {};
+    buffer_struct(const buffer_struct& obj){
+        size = obj.size;
+        buffer = new f32[obj.size];
+        for (int i = 0; i < obj.size; i++){
+            buffer[i] = obj.buffer[i];
+        }
+    };
+
+    inline buffer_struct operator=(buffer_struct obj){
+        Serial.print("CCCC");
+        size = obj.size;
+        buffer = new f32[obj.size];
+        for (int i = 0; i < obj.size; i++){
+            Serial.print(obj.buffer[i]);
+            buffer[i] = obj.buffer[i];
+        }
+        Serial.print("CCCC");
+    };
+};
+
+#ifdef CORE_CM4
 /*
  * Get data from M4 to M7
  */
-void read_to_M7(f32 *buffer) {
+
+boolean read_to_M7(f32* buffer) {
+    boolean return_value = false;
 	if (shared_data->status_CM4_to_CM7) {		// if M4 to M7 buffer has data
 
-		for(unsigned int n = 0; n < shared_data->buff4to7_size; ++n) {
-			*(buffer+n) = shared_data->buff4to7[n];	// Transfer data
-		}
-		shared_data->status_CM4_to_CM7 = 0;	// Unlock buffer and marks that it can write again
+        for(unsigned int n = 0; n < shared_data->buff4to7_size; ++n) {
+        buffer[n] = shared_data->buff4to7[n];	// Transfer data
+		
+        return_value = true;
+        }
+        shared_data->status_CM4_to_CM7 = false; // Unlock buffer and marks that it can write again
 	}
+    return return_value;
 }
 
 
 /*
  * Send data from M7 to M4
  */
+
 void  write_to_M4(f32 buffer[], unsigned int buffer_size) {
 
 	if (!shared_data->status_CM7_to_CM4) {	// if M7 to M4 buffer is not locked
@@ -187,62 +245,140 @@ void  write_to_M4(f32 buffer[], unsigned int buffer_size) {
 		shared_data->buff7to4_size = buffer_size_limited_7to4;
 		for (unsigned int n = 0; n < buffer_size_limited_7to4; ++n) {
 			shared_data->buff7to4[n] = buffer[n];	// Transfer data
-		}
-
-		shared_data->status_CM7_to_CM4 = 1;
+        }
+		shared_data->status_CM7_to_CM4 = true;
 
 	}
+    return;
 }
+
+
+void print_from_M4(f32 buffer[], unsigned int buffer_size) {
+	if (!shared_data->status_CM7_to_CM4) {	// if M4 to M7 buffer is not locked
+        buffer_size_limited_7to4 = (buffer_size > ARRAY_SIZE/2) ? ARRAY_SIZE/2 : buffer_size;
+
+		shared_data->buff7to4_size = buffer_size_limited_7to4;
+		for (unsigned int n = 0; n < buffer_size_limited_7to4; ++n) {
+			shared_data->buff7to4[n] = buffer[n];	// Transfer data
+		}
+		shared_data->status_CM7_to_CM4 = true;
+        shared_data->printSerial = true;
+
+	}
+    return;
+}
+
+train_data buffer_to_train_data(f32* buffer, char& typeOfOperation){
+
+    f32 printBuffer[ARRAY_SIZE/4];
+    
+
+    typeOfOperation = char(buffer[0]);
+    
+    //sample.input.cols = buffer[1];
+    //sample.input.rows = buffer[2];
+    unsigned int input_size = buffer[1] * buffer[2];
+    //sample.target.cols = buffer[input_size+3];
+    //sample.target.rows = buffer[input_size+4];
+    unsigned int target_size = buffer[input_size+3] * buffer[input_size+4];
+
+    train_data sample = {};
+    sample.input = M::zeros(buffer[2], buffer[1]);
+    sample.target = M::zeros(buffer[input_size+4], buffer[input_size+3]);
+
+    for(unsigned int n = 0; n<input_size; n++){
+        printBuffer[0] = buffer[n+3];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        sample.input.data[n] = buffer[n+3];
+        printBuffer[0] = sample.input.data[n];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
+    
+    for(unsigned int n = 0; n<target_size; n++){
+        printBuffer[0] = buffer[n+input_size+5];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        sample.target.data[n] = buffer[n+input_size+5];
+        printBuffer[0] = sample.target.data[n];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
+
+    return sample;
+}
+
+
+//Order of Buffer info: error, matrix.cols, matrix.rows, matrix.data
+buffer_struct M_to_buffer(M matrix, f32 error){
+    unsigned int matrix_size = matrix.rows * matrix.cols;
+    f32 buffer[matrix_size + 3];
+    buffer[0] = error;
+    buffer[1] = matrix.cols;
+    buffer[2] = matrix.rows;
+    for (unsigned int n=0; n<matrix_size; n++){
+        buffer[n+3] = matrix.data[n];
+    }
+
+    buffer_struct result(matrix_size + 3, buffer);
+    return result;
+}
+
 #endif
 
 
 
-#ifdef CORE_CM4
+#ifdef CORE_CM7
+
 /*
  * Get data from M7 to M4
  */
-boolean read_to_M4(f32 *buffer) {
-	if (shared_data->status_CM7_to_CM4) {	// if M7 to M4 buffer has data
 
-		for(unsigned int n = 0; n < shared_data->buff7to4_size; ++n) {
+boolean read_to_M4(f32 *buffer) {
+    boolean return_value = false;
+    if (shared_data->status_CM7_to_CM4) {	// if M7 to M4 buffer has data
+        if (shared_data->printSerial){
+            for(unsigned int n = 0; n < shared_data->buff7to4_size; ++n){
+                Serial.print(shared_data->buff7to4[n]);
+            }
+            shared_data->printSerial = false;
+            shared_data->status_CM7_to_CM4 = false;
+        }
+		else {
+           for(unsigned int n = 0; n < shared_data->buff7to4_size; ++n) {
 			*(buffer+n) = shared_data->buff7to4[n];	// Transfer data
 		}
-		shared_data->status_CM7_to_CM4 = 0;	// Unlock buffer
-        return true;
+		
+        return_value = true;
+        }
+        shared_data->status_CM7_to_CM4 = false;
+		
 	}
-    return false;
+    return return_value;
 }
 
 
 /*
  * Send data from M4 to M7
  */
-void write_to_M7(f32 buffer[], unsigned int buffer_size) {
 
+void write_to_M7(f32* buffer, unsigned int buffer_size) {
 	if (!shared_data->status_CM4_to_CM7) {	// if M4 to M7 buffer is not locked
-
 		buffer_size_limited_4to7 = (buffer_size > ARRAY_SIZE/2) ? ARRAY_SIZE/2 : buffer_size;
-
+        
 		shared_data->buff4to7_size = buffer_size_limited_4to7;
 		for (unsigned int n = 0; n < buffer_size_limited_4to7; ++n) {
 			shared_data->buff4to7[n] = buffer[n];	// Transfer data
 		}
-
-		shared_data->status_CM4_to_CM7 = 1;
+		shared_data->status_CM4_to_CM7 = true;
 
 	}
+    return;
 }
-#endif
-
-struct buffer_struct{
-    unsigned int size;
-    f32 *buffer;
-
-    buffer_struct(unsigned int size, f32 *buffer) : buffer(buffer), size(size) {};
-};
 
 //Order of Buffer info: typeOfOperation, input.cols, input.rows, input.data, target.cols, target.rows, target.data
-buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
+/*buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
     /*
     sample.input.data
     sample.input.cols
@@ -251,15 +387,17 @@ buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
     sample.target.data
     sample.target.cols
     sample.target.rows
-    */
-    f32 *buffer;
+    
 
     unsigned int input_size = sample.input.cols * sample.input.rows;
     unsigned int target_size = sample.target.cols * sample.target.rows;
 
+    f32 buffer[input_size + target_size + 5];
+
     buffer[0] = typeOfOperation;
     buffer[1] = sample.input.cols;
     buffer[2] = sample.input.rows;
+    
     for(unsigned int n=0; n < input_size; n++){
         buffer[n+3] = sample.input.data[n];
     }
@@ -269,48 +407,41 @@ buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
     for(unsigned int n=0; n < target_size; n++){
         buffer[input_size+5+n] = sample.target.data[n];
     }
-
     buffer_struct result(input_size + target_size + 5, buffer);
     return result;
 }
+*/
 
-train_data buffer_to_train_data(f32* buffer, char& typeOfOperation){
-    typeOfOperation = buffer[0];
+void train_data_to_buffer(char typeOfOperation, train_data sample, int& size, f32* buffer){
+    /*
+    sample.input.data
+    sample.input.cols
+    sample.input.rows
+    
+    sample.target.data
+    sample.target.cols
+    sample.target.rows
+    */
 
-    train_data sample;
-    sample.input.cols = buffer[1];
-    sample.input.rows = buffer[2];
     unsigned int input_size = sample.input.cols * sample.input.rows;
-    f32 data[input_size];
-    sample.input.data = data;
-    for(unsigned int n = 0; n<input_size; n++){
-        data[n] = buffer[n+3];
-    }
-    sample.target.cols = buffer[1];
-    sample.target.rows = buffer[2];
     unsigned int target_size = sample.target.cols * sample.target.rows;
-    f32 data2[target_size];
-    sample.target.data = data2;
-    for(unsigned int n = 0; n<target_size; n++){
-        data[n] = buffer[n+input_size+5];
+
+    buffer[0] = typeOfOperation;
+    buffer[1] = sample.input.cols;
+    buffer[2] = sample.input.rows;
+    
+    for(unsigned int n=0; n < input_size; n++){
+        buffer[n+3] = sample.input.data[n];
     }
 
-    return sample;
-}
-
-//Order of Buffer info: error, matrix.cols, matrix.rows, matrix.data
-buffer_struct M_to_buffer(M matrix, f32 error){
-    f32 *buffer;
-    buffer[0] = error;
-    buffer[1] = matrix.cols;
-    buffer[2] = matrix.rows;
-    unsigned int matrix_size = matrix.rows * matrix.cols;
-    for (unsigned int n=0; n<matrix_size; n++){
-        buffer[n+3] = matrix.data[n];
+    buffer[input_size + 3] = sample.target.cols;
+    buffer[input_size + 4] = sample.target.rows;
+    for(unsigned int n=0; n < target_size; n++){
+        buffer[input_size+5+n] = sample.target.data[n];
     }
-
-    buffer_struct result(matrix_size + 3, buffer);
-    return result;
+    //buffer_struct result(input_size + target_size + 5, buffer);
+    size = input_size + target_size + 5;
+    return;
 }
 
 M buffer_to_M(f32* buffer, f32& error){
@@ -324,6 +455,14 @@ M buffer_to_M(f32* buffer, f32& error){
     }
     return data;
 }
+
+void print_from_M4(f32 buffer[], unsigned int buffer_size) {
+    return;
+}
+
+#endif
+
+
 
 
 static bool debug_nn = false; // Set this to true to see e.g. features generated from the raw signal
@@ -349,13 +488,6 @@ static bool debug_nn = false; // Set this to true to see e.g. features generated
 static Layer *l1;
 static Layer *l2;
 //static Layer* l1;
-
-// FF added fct declarations for platformio
-void initNetworkModel();
-void sendFloat (float arg);
-void sendInt (int arg);
-//void read_bias(Conv2D* l);
-//void read_weights(Layer* l);
 
 
 
@@ -766,7 +898,37 @@ void sendInt (int arg)
     Serial.write (data, sizeof (arg));
 }
 
+
 M train(M input, M target, f32& loss){
+    f32 printBuffer[ARRAY_SIZE/4];
+    printBuffer[0] = f32(5);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+    printBuffer[0] = input.cols;
+    print_from_M4(printBuffer, 1);
+    delay(200);
+    unsigned int input_size = input.cols * input.rows;
+    printBuffer[0] = input.rows;
+    print_from_M4(printBuffer, 1);
+    delay(200);
+    printBuffer[0] = target.cols;
+    print_from_M4(printBuffer, 1);
+    delay(200);
+    unsigned int target_size = target.cols * target.rows;
+    printBuffer[0] = target.rows;
+    print_from_M4(printBuffer, 1);
+    delay(200);
+    for(unsigned int n = 0; n<input_size; n++){
+        printBuffer[0] = input.data[n];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
+    
+    for(unsigned int n = 0; n<target_size; n++){
+        printBuffer[0] = target.data[n];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
     l1->resetGradients();
     l2->resetGradients();
     M a = Tanh(l1->forward(input));
@@ -796,18 +958,101 @@ M predict(M input, M target, f32& loss){
     return b;
 }
 
-#ifdef CORE_CM7
+#ifdef CORE_CM4
+
+M train_for_M4(f32* buffer, f32& loss){
+    f32 printBuffer[ARRAY_SIZE/4];
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+    unsigned int buffersize = shared_data->buff4to7_size;
+    for(int i = 0; i < buffersize; i++){
+            printBuffer[0] = buffer[i];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+    
+    M input = M::zeros(buffer[2], buffer[1]);
+    unsigned int input_size = buffer[1] * buffer[2];
+    for(unsigned int i = 0; input_size; i++){
+        printBuffer[0] = input.data[i];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
+    for(unsigned int i = 0; input_size; i++){
+        input.data[i] = buffer[i+3];
+        printBuffer[0] = input.data[i];
+        print_from_M4(printBuffer, 1);
+        delay(200);
+    }
+
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+
+    l1->resetGradients();
+    l2->resetGradients();
+
+    
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+
+    M a = Tanh(l1->forward(input));
+
+    
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+    M b = Tanh(l2->forward(a));
+
+    
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+    M _d4 = MsePrime(input, b);
+
+    
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+    M _d1 = l2->backward(_d4) * TanhPrime(a);
+
+
+    printBuffer[0] = f32(7);
+    print_from_M4(printBuffer, 1);
+    delay(200);
+
+    // accumulate gradients
+    l1->dw += l1->getDelta(_d1, input);
+    l1->db += _d1;
+
+    l2->dw += l2->getDelta(_d4, a);
+    l2->db += _d4;
+
+    l1->UpdateWeights(lr);
+    l2->UpdateWeights(lr);
+    loss = Mse(input, b);
+    return b;
+}
 
 void setup(){
-    Serial.begin(9600);
     InitMemory(1024 * 430);
-
+    
     l1 = Layer::create(25, 30);
     l2 = Layer::create(30, 25);
+    /*
+    Serial.begin(9600);
+
 
     memoryUsed = MemoryArena.Used;
-    MPU_Config();
-    core_share_init();
+    
 
     //pinMode(LEDR, OUTPUT);
     //pinMode(LEDG, OUTPUT);
@@ -824,13 +1069,129 @@ void setup(){
     randomSeed(0);
 
     initNetworkModel();
-    digitalWrite(LED_BUILTIN, LOW);    // OFF   
+    digitalWrite(LED_BUILTIN, LED_OFF);    // OFF   
+    */
 }
 
 void loop(){
+    f32 printBuffer[ARRAY_SIZE/4];
     if(shared_data->status_CM4_to_CM7){
-        f32 *buffer;
-        read_to_M7(buffer);
+        unsigned int buffersize = shared_data->buff4to7_size;
+        f32 buffer[buffersize];
+        int read = false;
+        while(!read){
+            read = read_to_M7(buffer);
+        }
+        /*
+        for(int i = 0; i < buffersize; i++){
+            printBuffer[0] = buffer[i];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+
+        printBuffer[0] = f32(7);
+        print_from_M4(printBuffer, 1);
+        delay(200);*/
+
+        char inByte;
+        M output;
+        f32 error = 0;
+        //train_data sample = buffer_to_train_data(buffer, inByte);
+
+
+
+
+
+
+        inByte = char(buffer[0]);
+        
+        //sample.input.cols = buffer[1];
+        //sample.input.rows = buffer[2];
+        unsigned int input_size = buffer[1] * buffer[2];
+        //sample.target.cols = buffer[input_size+3];
+        //sample.target.rows = buffer[input_size+4];
+        unsigned int target_size = buffer[input_size+3] * buffer[input_size+4];
+
+        train_data sample = {};
+        sample.input = M::zeros(buffer[2], buffer[1]);
+        sample.target = M::zeros(buffer[input_size+4], buffer[input_size+3]);
+
+        for(unsigned int n = 0; n<input_size; n++){
+            printBuffer[0] = buffer[n+3];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+            sample.input.data[n] = buffer[n+3];
+            printBuffer[0] = sample.input.data[n];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+        
+        for(unsigned int n = 0; n<target_size; n++){
+            printBuffer[0] = buffer[n+input_size+5];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+            sample.target.data[n] = buffer[n+input_size+5];
+            printBuffer[0] = sample.target.data[n];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+
+
+        printBuffer[0] = sample.input.cols;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        printBuffer[0] = sample.input.rows;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        printBuffer[0] = sample.target.cols;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        printBuffer[0] = sample.target.rows;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+
+        for(unsigned int n = 0; n<input_size; n++){
+            printBuffer[0] = sample.input.data[n];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+        
+        for(unsigned int n = 0; n<target_size; n++){
+            printBuffer[0] = sample.target.data[n];
+            print_from_M4(printBuffer, 1);
+            delay(200);
+        }
+
+        if(inByte == 't'){
+            error = 0;
+            //output = train(sample.input, sample.target, error);
+            output = train_for_M4(buffer, error);
+        }
+        else if(inByte == 'p'){
+            error = 0;
+            output = predict(sample.input, sample.target, error);
+        }
+        printBuffer[0] = 7;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        buffer_struct bufferAux = M_to_buffer(output, error);
+        printBuffer[0] = 6;
+        print_from_M4(printBuffer, 1);
+        delay(200);
+        write_to_M4(bufferAux.buffer, bufferAux.size);
+    }
+    /*
+    if(shared_data->status_CM4_to_CM7){
+        unsigned int buffersize = shared_data->buff4to7_size;
+        f32 buffer[buffersize];
+        boolean read = 0;
+        printBuffer[0] = 9;
+        print_from_M4(printBuffer, 1);
+        while(!read){
+            read = read_to_M7(buffer);
+        }
+        printBuffer[0] = 9;
+        print_from_M4(printBuffer, 1);
         char inByte;
         M output;
         f32 error = 0;
@@ -845,14 +1206,28 @@ void loop(){
         }
         buffer_struct bufferAux = M_to_buffer(output, error);
         write_to_M4(bufferAux.buffer, bufferAux.size);
-    }
+    }*/
 }
 
 #endif
 
-#ifdef CORE_CM4
+#ifdef CORE_CM7
+
+void initSharedData(){
+  shared_data->update = true;
+  shared_data->led = LEDG;
+  shared_data->nextLed = LEDB;
+  shared_data->otherLed = LEDR;
+  shared_data->update = false;
+}
 
 void setup(){
+    MPU_Config();
+    bootM4();
+    initSharedData();
+
+    
+    core_share_init();
     Serial.begin(9600);
     InitMemory(1024 * 430);
 
@@ -876,16 +1251,59 @@ void setup(){
     randomSeed(0);
 
     initNetworkModel();
-    digitalWrite(LED_BUILTIN, LOW);    // OFF   
+    digitalWrite(LED_BUILTIN, LED_OFF);    // OFF   
+
+    digitalWrite(LEDR, LED_OFF);
+    digitalWrite(LEDB, LED_OFF);
+    digitalWrite(LEDG, LED_OFF);
+    
 }
 
 
 void loop(){
+    // put your main code here, to run repeatedly:
     if(Serial.available() > 0){
         char inByte = Serial.read();
-        if(inByte == 't'){
+        if(inByte == 't' || true){
+            //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
+            uint begin = millis();
+            train_data sample = receive_sample(25);
+            //buffer_struct aux = train_data_to_buffer(inByte, sample);
+            int size;
+            f32 aux[250] = {0};
+            train_data_to_buffer(inByte, sample, size, aux);
+            /*Serial.print("CCCC");
+            Serial.print(size);
+            Serial.print("BBBB");
+            for (int i = 0; i < size; i++){
+                Serial.print(aux[i]);
+            }
+            Serial.print("BBBB");/**/
+
+            write_to_M7(aux, size);
+            int read = false;
+            while(!read){
+                read = read_to_M4(aux);
+            }
+            Serial.print(8);
+            f32 error = 0;
+            M output = buffer_to_M(aux,error);
+            uint end = millis();
+            //sendFloat(error);
+            sendInferenceResult(output, error);
+            uint elapsed_secs = uint(end - begin);
+             byte * data = (byte *) &elapsed_secs; 
+            Serial.write(data, sizeof (elapsed_secs));
+        }
+    }
+    /*
+    
+    if(Serial.available() > 0){
+        char inByte = Serial.read();
+        if(inByte == 't' || true){
             //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
             train_data sample = receive_sample(25);
+            uint begin = millis();
             buffer_struct aux = train_data_to_buffer(inByte, sample);
             write_to_M7(aux.buffer, aux.size);
             //M output = train(sample.input, sample.target, error); //-> CP7 
@@ -895,14 +1313,20 @@ void loop(){
             }
             f32 error = 0;
             M output = buffer_to_M(aux.buffer,error);
+            uint end = millis();
             //sendFloat(error);
             sendInferenceResult(output, error);
+            uint elapsed_secs = uint(end - begin);
+             byte * data = (byte *) &elapsed_secs; 
+            Serial.write(data, sizeof (elapsed_secs));
         } else if(inByte == 'p'){
             //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
 
             train_data sample = receive_sample(25);
+            uint begin = millis();
             //M input = receive_sample_inference();
             buffer_struct aux = train_data_to_buffer(inByte, sample);
+            sendInt(2);
             write_to_M7(aux.buffer, aux.size);
             //M output = predict(sample.input, sample.target, loss); //-> CP7 
             boolean read = 0;
@@ -911,8 +1335,12 @@ void loop(){
             }
             float loss = 0.0;
             M output = buffer_to_M(aux.buffer,loss);
+            uint end = millis();
             sendInferenceResult(output, loss);
             MemoryArena.Used = memoryUsed;
+            uint elapsed_secs = uint(end - begin);
+             byte * data = (byte *) &elapsed_secs; 
+            Serial.write(data, sizeof (elapsed_secs));
         } else if(inByte == 'f'){
             // START FEDERATED LEARNING
         } else if(inByte == 'g'){
@@ -939,5 +1367,6 @@ void loop(){
         }
     }
     MemoryArena.Used = memoryUsed;
+    */
 }
 #endif
