@@ -1,7 +1,36 @@
 // If your target is limited in memory remove this macro to save 10K RAM
 
 #define ONCOMPUTER 0
+
+#include <Arduino.h>
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+typedef float f32;
+typedef double f64;
+#ifdef CORE_CM4
 #include "nn.h"
+
+static f32 lr = 0.001f;
+static Layer *l1;
+static Layer *l2;
+struct train_data{
+    M input;
+    M target;
+};
+
+struct train_data_cnn{
+    M3 input;
+    M target;
+};
+#endif
 
 
 #include "mbed.h"
@@ -24,19 +53,6 @@ using namespace rtos;
 #define LED_ON      LOW
 #define LED_OFF     HIGH
 #endif
-
-static u32 memoryUsed = 0;
-static f32 lr = 0.001f;
-
-struct train_data{
-    M input;
-    M target;
-};
-
-struct train_data_cnn{
-    M3 input;
-    M target;
-};
 
 #define OUTPUT_SIZE 25
 
@@ -377,6 +393,7 @@ void write_to_M7(f32* buffer, unsigned int buffer_size) {
     return;
 }
 
+
 //Order of Buffer info: typeOfOperation, input.cols, input.rows, input.data, target.cols, target.rows, target.data
 /*buffer_struct train_data_to_buffer(char typeOfOperation, train_data sample){
     /*
@@ -411,7 +428,7 @@ void write_to_M7(f32* buffer, unsigned int buffer_size) {
     return result;
 }
 */
-
+/*
 void train_data_to_buffer(char typeOfOperation, train_data sample, int& size, f32* buffer){
     /*
     sample.input.data
@@ -421,7 +438,7 @@ void train_data_to_buffer(char typeOfOperation, train_data sample, int& size, f3
     sample.target.data
     sample.target.cols
     sample.target.rows
-    */
+    
 
     unsigned int input_size = sample.input.cols * sample.input.rows;
     unsigned int target_size = sample.target.cols * sample.target.rows;
@@ -444,6 +461,7 @@ void train_data_to_buffer(char typeOfOperation, train_data sample, int& size, f3
     return;
 }
 
+
 M buffer_to_M(f32* buffer, f32& error){
     error = buffer[0];
     M data;
@@ -455,6 +473,7 @@ M buffer_to_M(f32* buffer, f32& error){
     }
     return data;
 }
+*/
 
 void print_from_M4(f32 buffer[], unsigned int buffer_size) {
     return;
@@ -468,346 +487,12 @@ void print_from_M4(f32 buffer[], unsigned int buffer_size) {
 static bool debug_nn = false; // Set this to true to see e.g. features generated from the raw signal
 
 
-// /** Audio buffers, pointers and selectors */
-// typedef struct {
-//     int16_t buffer[EI_CLASSIFIER_RAW_SAMPLE_COUNT];
-//     uint8_t buf_ready;
-//     uint32_t buf_count;
-//     uint32_t n_samples;
-// } inference_t;
 
-// static inference_t inference;
-
-// typedef uint8_t scaledType;
-
-// static scaledType microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
-//     numpy::int16_to_float(&inference.buffer[offset], out_ptr, length);
-//     return 0;
-// }
-
-static Layer *l1;
-static Layer *l2;
-//static Layer* l1;
-
-
-
-
-void read_weights(Layer* l) {
-    //Serial.println("Receiving weights..");
-    float* weights = l->w.data;
-
-    for (uint16_t i = 0; i < l->w.rows * l->w.cols; ++i) {
-        //Serial.write('n');
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        weights[i] = *reinterpret_cast<float*>(bytes);
-    }
-
-    // for (uint16_t i = 0; i < l->w.rows * l->w.cols; ++i) {
-    //     Serial.print(l->w.data[i]);
-    //     Serial.print(" ");
-    // }
-    // Serial.print(l->w.std());
-}
-
-
-void send_weights(MaxPooling*l){
-    float* weights = l->grad_input.data;
-
-    for (u32 i = 0; i < l->grad_input.d1 * l->grad_input.d2 * l->grad_input.d3; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_weights(Conv2D*l){
-    float* weights = l->kernels.data;
-
-    for (u32 i = 0; i < l->kernels.d1 * l->kernels.d2 * l->kernels.d3 * l->kernels.d4; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_bias(Conv2D*l){
-    float* weights = l->bias.data;
-
-    for (u16 i = 0; i < l->bias.rows * l->bias.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_weights(Layer *l){
-    float* weights = l->w.data;
-
-    for (u16 i = 0; i < l->w.rows * l->w.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_bias(Layer *l){
-    float* weights = l->b.data;
-
-    for (uint16_t i = 0; i < l->b.rows * l->b.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-
-void read_bias(Layer* l) {
-    //Serial.println("Receiving bias..");
-    float* bias = l->b.data;
-    for (uint16_t i = 0; i < l->b.rows * l->b.cols; ++i) {
-        //Serial.write('n');
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        bias[i] = *reinterpret_cast<float*>(bytes);
-    }
-
-    // for (uint16_t i = 0; i < l->b.rows * l->b.cols; ++i) {
-    //     Serial.print(l->b.data[i]);
-    //     Serial.print(" ");
-    // }
-    // Serial.print(l->b.std());
-}
-
-void read_weights(Conv2D* l) {
-    //Serial.println("Receiving weights..");
-    float* weights = l->kernels.data;
-    for (uint16_t i = 0; i < l->kernels.d1 * l->kernels.d2 * l->kernels.d3 * l->kernels.d4; ++i) {
-        //Serial.write('n');
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        weights[i] = *reinterpret_cast<float*>(bytes);
-    }
-
-    // for (uint16_t i = 0; i < l->w.rows * l->w.cols; ++i) {
-    //     Serial.print(l->w.data[i]);
-    //     Serial.print(" ");
-    // }
-    // Serial.print(l->w.std());
-}
-
-void read_weights(MaxPooling* l) {
-    //Serial.println("Receiving weights..");
-    // float* weights = l->grad_input.data;
-    // for (uint16_t i = 0; i < l->grad_input.d1 * l->grad_input.d2 * l->grad_input.d3; ++i) {
-    //     //Serial.write('n');
-    //     while (Serial.available() < 4);
-
-    //     char bytes[4];
-    //     Serial.readBytes(bytes, 4);
-    //     //weights[i] = *reinterpret_cast<float*>(bytes);
-    // }
-
-    // for (uint16_t i = 0; i < l->w.rows * l->w.cols; ++i) {
-    //     Serial.print(l->w.data[i]);
-    //     Serial.print(" ");
-    // }
-    // Serial.print(l->w.std());
-}
-
-void read_bias(Conv2D* l) {
-    //Serial.println("Receiving bias..");
-    float* bias = l->bias.data;
-    for (uint16_t i = 0; i < l->bias.rows * l->bias.cols; ++i) {
-        //Serial.write('n');
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        bias[i] = *reinterpret_cast<float*>(bytes);
-    }
-
-    // for (uint16_t i = 0; i < l->b.rows * l->b.cols; ++i) {
-    //     Serial.print(l->b.data[i]);
-    //     Serial.print(" ");
-    // }
-    // Serial.print(l->b.std());
-}
-
-void read_bias(MaxPooling* l) {
-}
-
-
-void read_layer_weights(Layer* l){
-    read_bias(l);
-    read_weights(l);
-}
-
-void read_layer_weights(Conv2D* l){
-    read_bias(l);
-    read_weights(l);
-}
-
-void read_layer_weights(MaxPooling* l){
-    read_bias(l);
-    read_weights(l);
-}
-
-void send_layer_weights(Layer* l){
-    send_weights(l);
-    send_bias(l);
-}
-
-void send_layer_weights(MaxPooling* l){
-    send_weights(l);
-    //send_bias(l);
-}
-
-void sendLayerMetaData(Layer* l){
-    sendInt(-1); // Dense layer
-    sendInt(l->w.rows);
-    sendInt(l->w.cols);
-}
-
-void sendLayerMetaData(MaxPooling* l){
-    sendInt(-2); // Max pool layer
-    sendInt(l->grad_input.d1);
-    sendInt(l->grad_input.d2);
-    sendInt(l->grad_input.d3);
-}
-
-
-void sendLayerMetaData(Conv2D* l){
-    sendInt(-3); // CNN
-    sendInt(l->kernels.d1);
-    sendInt(l->kernels.d2);
-    sendInt(l->kernels.d3);
-    sendInt(l->kernels.d4);
-}
-
-// SEND GRADIENTS
-void send_gradients(Conv2D*l){
-    float* weights = l->dkernels.data;
-
-    for (u32 i = 0; i < l->dkernels.d1 * l->dkernels.d2 * l->dkernels.d3 * l->dkernels.d4; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_gradient_bias(Conv2D*l){
-    float* weights = l->db.data;
-
-    for (u16 i = 0; i < l->db.rows * l->db.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_gradient_bias(Layer*l){
-    float* weights = l->db.data;
-
-    for (u16 i = 0; i < l->db.rows * l->db.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-void send_gradients(Layer *l){
-    float* weights = l->dw.data;
-
-    for (u16 i = 0; i < l->dw.rows * l->dw.cols; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-        // sendFloat(weights[i]);
-    }
-}
-
-void send_gradients(MaxPooling *l){
-    float* weights = l->grad_input.data;
-
-    for (u32 i = 0; i < l->grad_input.d1 * l->grad_input.d2 * l->grad_input.d3; ++i) {
-        Serial.write('n');
-        sendFloat(weights[i]);
-    }
-}
-
-
-void send_layer_gradients(Layer* l){
-    send_gradients(l);
-    send_gradient_bias(l);
-}
-
-void send_layer_gradients(MaxPooling* l){
-    send_gradients(l);
-    //send_gradient_bias(l);
-}
-
-void send_layer_weights(Conv2D* l){
-    send_weights(l);
-    send_bias(l);
-}
-
-void send_layer_gradients(Conv2D* l){
-    send_gradients(l);
-    send_gradient_bias(l);
-}
-
-void initNetworkModel(){
-    Serial.println("Start receiving model");
-    char signal;
-    do {
-        signal = Serial.read();
-        Serial.println(memoryUsed);
-    } while(signal != 's'); // s -> START
-
-    Serial.println("start");
-    Serial.write("i");
-
-    // READ LEARNING RATE
-    while(Serial.available()<4);
-    char bytes[4];
-    Serial.readBytes(bytes, 4);
-    memcpy(&lr, bytes, sizeof(f32));
-
-
-    // How many layers?
-    sendInt(2);
-    sendLayerMetaData(l1);
-    sendLayerMetaData(l2);
-    //sendLayerMetaData(l1);
-
-
-    // TODO : Change to read_weights(l1): this will read bias and weights within the same function.
-    read_layer_weights(l1);
-    //read_layer_weights(pl1);
-    read_layer_weights(l2);
-    //read_layer_weights(l1);
-    // read_bias(l1);
-    // read_weights(l1);
-
-    // read_bias(l2);
-    // read_weights(l2);
-}
-
-train_data receive_sample(u32 input_size){
-    train_data data = {};
-    data.input = M::zeros(1, input_size);
-    data.target = M::zeros(1, OUTPUT_SIZE);
-
-    f32* input = data.input.data;
-    f32* target = data.target.data;
-
-    for(u16 i=0;i<input_size;++i){
-        // Serial.write('n');
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        input[i] = *reinterpret_cast<float*>(bytes);
-        
-    }
+void receive_sample_to_buffer(u32 input_size,char typeOfOperation, int& size, f32* buffer){
+    
+    buffer[0] = typeOfOperation;
+    buffer[1] = input_size;
+    buffer[2] = 1;
     
     for(u16 i=0;i<OUTPUT_SIZE;++i){
         //Serial.write('n');
@@ -815,41 +500,22 @@ train_data receive_sample(u32 input_size){
 
         char bytes[4];
         Serial.readBytes(bytes, 4);
-        target[i] = *reinterpret_cast<float*>(bytes);
+        buffer[i+3] = *reinterpret_cast<float*>(bytes);
     }
 
-    return data;
-}
-
-
-train_data_cnn receive_sample_cnn(u32 height, u32 width, u32 channels, u32 output_size){
-    train_data_cnn data = {};
-    data.input = M3::zeros(height, width, channels);
-    data.target = M::zeros(1, output_size);
-
-    f32* input = data.input.data;
-    f32* target = data.target.data;
-
-
-    for(u32 i=0;i<height*width*channels;++i){
-        // Serial.write('n');
-        //sendInt(i);
+    buffer[input_size + 3] = OUTPUT_SIZE;
+    buffer[input_size + 4] = 1;
+    for(u16 i=0;i<OUTPUT_SIZE;++i){
+        //Serial.write('n');
         while (Serial.available() < 4);
 
         char bytes[4];
         Serial.readBytes(bytes, 4);
-        input[i] = *reinterpret_cast<float*>(bytes);
+        buffer[input_size+5+i] = *reinterpret_cast<float*>(bytes);
     }
     
-    for(u16 i=0;i<output_size;++i){
-        while (Serial.available() < 4);
-
-        char bytes[4];
-        Serial.readBytes(bytes, 4);
-        target[i] = *reinterpret_cast<float*>(bytes);
-    }
-
-    return data;
+    //buffer_struct result(input_size + target_size + 5, buffer);
+    size = input_size + OUTPUT_SIZE + 5;
 }
 
 float readFloat() {
@@ -860,7 +526,7 @@ float readFloat() {
     }
     return *(float *)&res;
 }
-
+/*
 void sendM(M arg)
 {
     for(u32 i=0;i<arg.cols * arg.rows;++i){
@@ -868,7 +534,22 @@ void sendM(M arg)
         sendFloat(arg.data[i]);
     }
 }
+*/
 
+void sendInferenceResult(f32* buffer)
+{
+    float loss = buffer[0];
+    u32 cols = buffer[1];
+    u32 rows = buffer[2];
+    for(u32 i=0;i<cols * rows;++i){
+        Serial.write('n');
+        sendFloat(buffer[i+3]);
+    }
+
+    Serial.write('n');
+    sendFloat(loss);
+}
+/*
 void sendInferenceResult(M arg, f32 loss)
 {
     for(u32 i=0;i<arg.cols * arg.rows;++i){
@@ -879,7 +560,7 @@ void sendInferenceResult(M arg, f32 loss)
     Serial.write('n');
     sendFloat(loss);
 }
-
+*/
 void sendFloat (float arg)
 {
     // get access to the float as a byte-array:
@@ -896,6 +577,61 @@ void sendInt (int arg)
 
     // write the data to the serial
     Serial.write (data, sizeof (arg));
+}
+
+
+#ifdef CORE_CM4
+
+void initNetworkModel_CM4(){
+    f32 buffer[2000];
+	if (shared_data->status_CM4_to_CM7) {		// if M4 to M7 buffer has data
+
+        for(unsigned int n = 0; n < shared_data->buff4to7_size; ++n) {
+        buffer[n] = shared_data->buff4to7[n];	// Transfer data
+		
+        }
+        shared_data->status_CM4_to_CM7 = false; // Unlock buffer and marks that it can write again
+	}
+
+    memcpy(&lr, buffer, sizeof(f32));
+
+    //l1, l2
+
+    int startingPoint = 1;
+
+    //float* bias = l->b.data; //READING BIAS M[0,30]
+    for (uint16_t i = 0; i < 1 * 30; ++i) {
+        l1->b.data[i] = buffer[i+startingPoint];
+    }
+
+    startingPoint = startingPoint + 30;
+    
+    //float* weights = l->w.data; //READING WEIGHT M[25,30]
+    for (uint16_t i = 0; i < 25 * 30; ++i) {
+        l1->w.data[i] = buffer[i+startingPoint];
+    }
+
+    startingPoint = startingPoint + (25*30);
+
+    //float* bias = l->b.data;//READING BIAS M[0,25]
+    for (uint16_t i = 0; i < 1 * 25; ++i) {
+        
+        l2->b.data[i] = buffer[i+startingPoint];
+    }
+
+    
+    startingPoint = startingPoint + 25;
+    
+    //float* weights = l->w.data; //READING WEIGHT M[30,25]
+    for (uint16_t i = 0; i < 25 * 30; ++i) {
+        
+        l2->w.data[i] = buffer[i+startingPoint];
+    }
+
+    startingPoint = startingPoint + 25*30;
+    //if(buffer[startingPoint] != buffer[startingPoint]);
+
+
 }
 
 
@@ -958,7 +694,6 @@ M predict(M input, M target, f32& loss){
     return b;
 }
 
-#ifdef CORE_CM4
 
 M train_for_M4(f32* buffer, f32& loss){
     f32 printBuffer[ARRAY_SIZE/4];
@@ -1047,6 +782,8 @@ void setup(){
     
     l1 = Layer::create(25, 30);
     l2 = Layer::create(30, 25);
+    
+    //initNetworkModel_CM4();
     /*
     Serial.begin(9600);
 
@@ -1068,7 +805,6 @@ void setup(){
     // put your setup code here, to run once:
     randomSeed(0);
 
-    initNetworkModel();
     digitalWrite(LED_BUILTIN, LED_OFF);    // OFF   
     */
 }
@@ -1082,26 +818,21 @@ void loop(){
         while(!read){
             read = read_to_M7(buffer);
         }
-        /*
+        
         for(int i = 0; i < buffersize; i++){
             printBuffer[0] = buffer[i];
             print_from_M4(printBuffer, 1);
             delay(200);
         }
 
-        printBuffer[0] = f32(7);
+        printBuffer[0] = f32(6);
         print_from_M4(printBuffer, 1);
-        delay(200);*/
+        delay(200);
 
         char inByte;
         M output;
         f32 error = 0;
         //train_data sample = buffer_to_train_data(buffer, inByte);
-
-
-
-
-
 
         inByte = char(buffer[0]);
         
@@ -1213,6 +944,95 @@ void loop(){
 
 #ifdef CORE_CM7
 
+void initNetworkModel_CM7(f32* data){
+    Serial.println("Start receiving model");
+    char signal;
+
+    //f32 data[2000];
+    do {
+        signal = Serial.read();
+        //Serial.println(memoryUsed);
+    } while(signal != 's');
+
+    Serial.println("start");
+    Serial.write("i");
+
+    while(Serial.available()<4);
+    char bytes[4];
+    Serial.readBytes(bytes, 4);
+    //memcpy(&lr, bytes, sizeof(f32));
+
+    data[0] = *reinterpret_cast<float*>(bytes);
+
+    sendInt(2);
+    //Layer::create(25, 30);
+    //l2 = Layer::create(30, 25)
+    //sendLayerMetaData(l1);
+    //sendLayerMetaData(l2);
+    sendInt(-1); // Dense layer
+    sendInt(25);
+    sendInt(30);
+    sendInt(-1); // Dense layer
+    sendInt(30);
+    sendInt(25);
+
+    //read_layer_weights(l1);
+    //read_layer_weights(l2);
+
+    int startingPoint = 1;
+
+    //float* bias = l->b.data; //READING BIAS M[0,30]
+    for (uint16_t i = 0; i < 1 * 30; ++i) {
+        //Serial.write('n');
+        while (Serial.available() < 4);
+
+        char bytes[4];
+        Serial.readBytes(bytes, 4);
+        data[startingPoint+i] = *reinterpret_cast<float*>(bytes);
+    }
+
+    startingPoint = startingPoint + 30;
+    
+    //float* weights = l->w.data; //READING WEIGHT M[25,30]
+    for (uint16_t i = 0; i < 25 * 30; ++i) {
+        //Serial.write('n');
+        while (Serial.available() < 4);
+
+        char bytes[4];
+        Serial.readBytes(bytes, 4);
+        data[startingPoint+i] = *reinterpret_cast<float*>(bytes);
+    }
+
+    startingPoint = startingPoint + (25*30);
+
+    //float* bias = l->b.data;//READING BIAS M[0,25]
+    for (uint16_t i = 0; i < 1 * 25; ++i) {
+        //Serial.write('n');
+        while (Serial.available() < 4);
+
+        char bytes[4];
+        Serial.readBytes(bytes, 4);
+        data[startingPoint+i] = *reinterpret_cast<float*>(bytes);
+    }
+
+    
+    startingPoint = startingPoint + 25;
+    
+    //float* weights = l->w.data; //READING WEIGHT M[30,25]
+    for (uint16_t i = 0; i < 25 * 30; ++i) {
+        //Serial.write('n');
+        while (Serial.available() < 4);
+
+        char bytes[4];
+        Serial.readBytes(bytes, 4);
+        data[startingPoint+i] = *reinterpret_cast<float*>(bytes);
+    }
+
+    startingPoint = startingPoint + 25*30;
+    data[startingPoint] = NAN;
+}
+
+
 void initSharedData(){
   shared_data->update = true;
   shared_data->led = LEDG;
@@ -1229,14 +1049,14 @@ void setup(){
     
     core_share_init();
     Serial.begin(9600);
-    InitMemory(1024 * 430);
+    //InitMemory(1024 * 430);
 
-    l1 = Layer::create(25, 30);
-    l2 = Layer::create(30, 25);
+    //l1 = Layer::create(25, 30);
+    //l2 = Layer::create(30, 25);
 
-    memoryUsed = MemoryArena.Used;
+    //memoryUsed = MemoryArena.Used;
 
-   //pinMode(LEDR, OUTPUT);
+    //pinMode(LEDR, OUTPUT);
     //pinMode(LEDG, OUTPUT);
     //pinMode(LEDB, OUTPUT);
     pinMode(LED, OUTPUT);
@@ -1249,8 +1069,9 @@ void setup(){
 
     // put your setup code here, to run once:
     randomSeed(0);
-
-    initNetworkModel();
+    f32 data[2000];
+    initNetworkModel_CM7(data);
+    write_to_M7(data, 2000);
     digitalWrite(LED_BUILTIN, LED_OFF);    // OFF   
 
     digitalWrite(LEDR, LED_OFF);
@@ -1267,18 +1088,19 @@ void loop(){
         if(inByte == 't' || true){
             //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
             uint begin = millis();
-            train_data sample = receive_sample(25);
+            //train_data sample = receive_sample(25);
             //buffer_struct aux = train_data_to_buffer(inByte, sample);
             int size;
             f32 aux[250] = {0};
-            train_data_to_buffer(inByte, sample, size, aux);
-            /*Serial.print("CCCC");
+            //train_data_to_buffer(inByte, sample, size, aux);
+            receive_sample_to_buffer(25, inByte, size, aux);
+            Serial.print("CCCC");
             Serial.print(size);
             Serial.print("BBBB");
             for (int i = 0; i < size; i++){
                 Serial.print(aux[i]);
             }
-            Serial.print("BBBB");/**/
+            Serial.print("BBBB");
 
             write_to_M7(aux, size);
             int read = false;
@@ -1287,12 +1109,37 @@ void loop(){
             }
             Serial.print(8);
             f32 error = 0;
-            M output = buffer_to_M(aux,error);
+            //M output = buffer_to_M(aux,error);
             uint end = millis();
             //sendFloat(error);
-            sendInferenceResult(output, error);
+            //sendInferenceResult(output, error);
+            sendInferenceResult(aux);
             uint elapsed_secs = uint(end - begin);
-             byte * data = (byte *) &elapsed_secs; 
+            byte * data = (byte *) &elapsed_secs; 
+            Serial.write(data, sizeof (elapsed_secs));
+        }else if(inByte == 'p'){
+            //train_data_cnn sample = receive_sample_cnn(SIZE,SIZE,CHANNELS, 10);
+            uint begin = millis();
+            //train_data sample = receive_sample(25);
+            //buffer_struct aux = train_data_to_buffer(inByte, sample);
+            int size;
+            f32 aux[250] = {0};
+            //train_data_to_buffer(inByte, sample, size, aux);
+            receive_sample_to_buffer(25, inByte, size, aux);
+            write_to_M7(aux, size);
+            int read = false;
+            while(!read){
+                read = read_to_M4(aux);
+            }
+            Serial.print(8);
+            f32 error = 0;
+            //M output = buffer_to_M(aux,error);
+            uint end = millis();
+            //sendFloat(error);
+            //sendInferenceResult(output, error);
+            sendInferenceResult(aux);
+            uint elapsed_secs = uint(end - begin);
+            byte * data = (byte *) &elapsed_secs; 
             Serial.write(data, sizeof (elapsed_secs));
         }
     }
